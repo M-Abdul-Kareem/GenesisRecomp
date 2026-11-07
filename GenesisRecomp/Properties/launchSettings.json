@@ -1,0 +1,48 @@
+{
+  "profiles": {
+    "GenesisRecompVerifyLive": {
+      "commandName": "Project",
+      "commandLineArgs": "--verify-live \"E:\\SEGA\\Streets-of-Rage_Genesis_EN\\Streets of Rage (JUE) (REV 01) [!].bin\" 8"
+    },
+    "GenesisRecompVerifyVdp": {
+      "commandName": "Project",
+      "commandLineArgs": "--verify-vdp-fuzz 400"
+    },
+    "GenesisRecompRecompile": {
+      "commandName": "Project",
+      "commandLineArgs": "--recompile \"E:\\SEGA\\Streets-of-Rage_Genesis_EN\\Streets of Rage (JUE) (REV 01) [!].bin\""
+    },
+    "GenesisRecompVerifyRecomp": {
+      "commandName": "Project",
+      "commandLineArgs": "--verify-recomp \"E:\\SEGA\\Streets-of-Rage_Genesis_EN\\Streets of Rage (JUE) (REV 01) [!].bin\" 8"
+    },
+    "GenesisRecompPlayInterpreter": {
+      "commandName": "Project",
+      "commandLineArgs": "--play \"E:\\SEGA\\Streets-of-Rage_Genesis_EN\\Streets of Rage (JUE) (REV 01) [!].bin\" --interp"
+    },
+    "GenesisRecompPlay": {
+      "commandName": "Project",
+      "commandLineArgs": "--play \"E:\\SEGA\\Streets-of-Rage_Genesis_EN\\Streets of Rage (JUE) (REV 01) [!].bin\""
+    },
+    "GenesisRecompRun": {
+      "commandName": "Project",
+      "commandLineArgs": "--run \"E:\\SEGA\\Streets-of-Rage_Genesis_EN\\Streets of Rage (JUE) (REV 01) [!].bin\" --frames 3600 --dump 240,900,1100,2400,3000,3599 --press start@850-860 --press start@1000-1010 --press start@1120-1130 --press right@2000-2400 --press b@2500-2503 --press b@2600-2603 --press b@2700-2703 --out \"C:\\Users\\muthe\\Desktop\\frames\""
+    },
+    "GenesisRecompBoot": {
+      "commandName": "Project",
+      "commandLineArgs": "--boot \"E:\\SEGA\\Streets-of-Rage_Genesis_EN\\Streets of Rage (JUE) (REV 01) [!].bin\" --steps 3000000"
+    },
+    "GenesisRecompAnalysis": {
+      "commandName": "Project",
+      "commandLineArgs": "--analyze \"E:\\SEGA\\Streets-of-Rage_Genesis_EN\\Streets of Rage (JUE) (REV 01) [!].bin\""
+    },
+    "GenesisRecompVerifyDecoder": {
+      "commandName": "Project",
+      "commandLineArgs": "--verify-decoder \"C:\\Users\\muthe\\source\\repos\\GenesisRecomp\\GenesisRecomp\\listing_reference.txt\""
+    },
+    "GenesisRecompAudioTest": {
+      "commandName": "Project",
+      "commandLineArgs": "--audio-test \"C:\\Users\\muthe\\Desktop\\audio_test.wav\""
+    }
+  }
+}

@@ -1,0 +1,235 @@
+using System.Text;
+using GenesisRecomp.Cpu;
+
+namespace GenesisRecomp.Recomp;
+
+public sealed class RecompOptions
+{
+    /// <summary>Longest run of instructions in one generated method. 1 = one method per instruction (used by --verify-recomp).</summary>
+    public int MaxSegment = 16;
+}
+
+public sealed class RecompReport
+{
+    public uint Crc;
+    public string OutputPath = "";
+    public int Instructions, Lifted, Fallback, Segments, Bytes;
+    public int IndirectSites, ExternalTargets, BadAddresses;
+    public double RomCoverage;
+    public readonly Dictionary<Mn, int> FallbackByMnemonic = new();
+}
+
+/// <summary>
+/// Static recompiler: finds all the 68000 code in a ROM and writes it out as C# (one method per straight-line segment),
+/// plus a dispatch switch on the program counter. Compiled into the program, that code replaces the
+/// fetch-decode-execute loop for everything in the ROM.
+/// </summary>
+public static class RomRecompiler
+{
+    public static uint Crc32(byte[] data)
+    {
+        uint crc = 0xFFFFFFFF;
+        foreach (byte b in data)
+        {
+            crc ^= b;
+            for (int k = 0; k < 8; k++) crc = (crc & 1) != 0 ? (crc >> 1) ^ 0xEDB88320u : crc >> 1;
+        }
+        return ~crc;
+    }
+
+    // ---------------------------------------------------------------- 1. find the code
+
+    /// <summary>Entry points (reset and interrupt vectors) plus every jump-table target, found by iterating until nothing new turns up.</summary>
+    public static BlockGraph Analyze(byte[] rom)
+    {
+        uint[] vectors = Vectors.Read(rom);
+        var roots = new HashSet<uint> { vectors[1] };
+        foreach (uint v in vectors.Skip(2).Distinct())
+            if (v >= 0x100 && v < rom.Length && (v & 1) == 0) roots.Add(v);
+
+        for (int pass = 1; pass <= 25; pass++)
+        {
+            CodeMap map = CodeMap.Build(rom, roots);
+            JumpTables.Resolve(rom, map, out var tables, out _);
+            int added = 0;
+            foreach (var t in tables)
+            {
+                var targets = t.Kind == TableKind.BranchTable ? t.EntryAddresses : t.Targets;
+                foreach (uint r in targets) if (roots.Add(r)) added++;
+            }
+            if (added == 0) break;
+        }
+        return BlockGraph.Build(rom, roots);
+    }
+
+    // ---------------------------------------------------------------- 2. cut into segments
+
+    internal sealed class Segment
+    {
+        public uint Start;
+        public readonly List<DecodedInst> Insts = new();
+        public readonly List<List<string>?> Code = new();   // null = interpreter fallback
+        public readonly List<bool> SetsPc = new();
+    }
+
+    /// <summary>
+    /// A segment ends after: a block-ending jump/branch/return, a call (its return point must be an entry),
+    /// an instruction that falls back to the interpreter, or when it reaches the length limit.
+    /// Every segment start is an entry in the dispatch table.
+    /// </summary>
+    internal static List<Segment> Segmentize(BlockGraph g, RecompOptions opt, RecompReport rep)
+    {
+        var segs = new List<Segment>();
+        foreach (BasicBlock b in g.Blocks.Values)
+        {
+            Segment? cur = null;
+            foreach (DecodedInst ins in b.Insts)
+            {
+                if (cur == null) { cur = new Segment { Start = ins.Address }; segs.Add(cur); }
+                bool lifted = Lifter.TryLift(ins, out var lines, out bool setsPc);
+                cur.Insts.Add(ins);
+                cur.Code.Add(lifted ? lines : null);
+                cur.SetsPc.Add(setsPc);
+
+                rep.Instructions++;
+                if (lifted) rep.Lifted++;
+                else
+                {
+                    rep.Fallback++;
+                    rep.FallbackByMnemonic[ins.Op] = rep.FallbackByMnemonic.GetValueOrDefault(ins.Op) + 1;
+                }
+
+                bool ends = !lifted
+                            || ins.Flow is FlowKind.Call or FlowKind.IndirectCall || BlockGraph.EndsBlock(ins.Flow)
+                            || cur.Insts.Count >= opt.MaxSegment;
+                if (ends) cur = null;
+            }
+        }
+        return segs;
+    }
+
+    // ---------------------------------------------------------------- 3. write C#
+
+    public static RecompReport Generate(byte[] rom, string outPath, RecompOptions opt)
+    {
+        var rep = new RecompReport { Crc = Crc32(rom) };
+        BlockGraph g = Analyze(rom);
+        rep.Bytes = g.BytesCovered;
+        rep.RomCoverage = 100.0 * g.BytesCovered / rom.Length;
+        rep.IndirectSites = g.IndirectSites.Count;
+        rep.ExternalTargets = g.ExternalTargets.Count;
+        rep.BadAddresses = g.BadAddresses.Count;
+
+        List<Segment> segs = Segmentize(g, opt, rep);
+        rep.Segments = segs.Count;
+
+        string c = $"{rep.Crc:X8}";
+        var sb = new StringBuilder(1 << 22);
+        sb.AppendLine("// <auto-generated>");
+        sb.AppendLine("// Produced by GenesisRecomp --recompile. Do not edit; regenerate instead.");
+        sb.AppendLine($"// ROM CRC32 {c}, {rep.Instructions:N0} instructions in {rep.Segments:N0} segments ({rep.Lifted:N0} recompiled, {rep.Fallback:N0} left to the interpreter).");
+        sb.AppendLine("// This file is derived from the game's machine code. Keep it for your own use; do not redistribute it.");
+        sb.AppendLine("// </auto-generated>");
+        sb.AppendLine("#pragma warning disable CS0675, CS0219, CS0168");
+        sb.AppendLine("namespace GenesisRecomp.Cpu;");
+        sb.AppendLine();
+        sb.AppendLine("public sealed partial class Cpu68k");
+        sb.AppendLine("{");
+        sb.AppendLine("    [System.Runtime.CompilerServices.ModuleInitializer]");
+        sb.AppendLine($"    internal static void Register_{c}() =>");
+        sb.AppendLine($"        RecompiledGames[0x{c}u] = new RecompiledGame(0x{c}u, {rep.Segments}, {opt.MaxSegment}, static (cpu, pc) => cpu.Try_{c}(pc));");
+        sb.AppendLine();
+
+        // Dispatch in two levels (by 1 KB address bucket, then by exact address): one 10,000-case switch
+        // makes the C# compiler use gigabytes of memory, many small ones are cheap.
+        var buckets = segs.GroupBy(x => x.Start >> 10).OrderBy(x => x.Key).ToList();
+        sb.AppendLine($"    private bool Try_{c}(uint pc)");
+        sb.AppendLine("    {");
+        sb.AppendLine("        switch (pc >> 10)");
+        sb.AppendLine("        {");
+        foreach (var bk in buckets)
+            sb.AppendLine($"            case 0x{bk.Key:X}u: return D_{c}_{bk.Key:X}(pc);");
+        sb.AppendLine("            default: return false;");
+        sb.AppendLine("        }");
+        sb.AppendLine("    }");
+        foreach (var bk in buckets)
+        {
+            sb.AppendLine();
+            sb.AppendLine($"    private bool D_{c}_{bk.Key:X}(uint pc)");
+            sb.AppendLine("    {");
+            sb.AppendLine("        switch (pc)");
+            sb.AppendLine("        {");
+            foreach (Segment s in bk)
+                sb.AppendLine($"            case 0x{s.Start:X}u: S_{c}_{s.Start:X6}(); return true;");
+            sb.AppendLine("            default: return false;");
+            sb.AppendLine("        }");
+            sb.AppendLine("    }");
+        }
+
+        foreach (Segment s in segs) EmitSegment(sb, c, s);
+
+        sb.AppendLine("}");
+
+        outPath = outPath.Replace("{crc}", c);
+        string? dir = Path.GetDirectoryName(Path.GetFullPath(outPath));
+        if (dir != null) Directory.CreateDirectory(dir);
+        File.WriteAllText(outPath, sb.ToString(), new UTF8Encoding(false));
+        rep.OutputPath = outPath;
+        return rep;
+    }
+
+    private static void EmitSegment(StringBuilder sb, string crc, Segment s)
+    {
+        DecodedInst last = s.Insts[^1];
+        sb.AppendLine();
+        sb.AppendLine($"    // {s.Start:X6}..{last.NextAddress:X6}");
+        sb.AppendLine($"    private void S_{crc}_{s.Start:X6}()");
+        sb.AppendLine("    {");
+
+        // Cycle and instruction counts for everything that is recompiled in this segment, added once up front.
+        // (A trailing interpreter-fallback instruction counts itself.)
+        int n = 0, cycles = 0;
+        for (int k = 0; k < s.Insts.Count; k++)
+        {
+            if (s.Code[k] == null) continue;
+            n++;
+            cycles += 4 + 4 * (s.Insts[k].Length / 2);
+        }
+        if (n > 0)
+        {
+            sb.AppendLine($"        InstructionCount += {n};");
+            sb.AppendLine($"        Cycles += {cycles};");
+        }
+
+        for (int k = 0; k < s.Insts.Count; k++)
+        {
+            DecodedInst ins = s.Insts[k];
+            sb.AppendLine($"        // {ins.Address:X6}  {ins.Text}");
+            var code = s.Code[k];
+            if (code == null)
+            {
+                sb.AppendLine($"        PC = 0x{ins.Address:X}u; FallbackInsts++; ExecuteOne();");
+                continue;   // always the last instruction of its segment
+            }
+            sb.AppendLine($"        instrStart = 0x{ins.Address:X}u;");
+            foreach (string line in code) sb.AppendLine("        " + line);
+            bool isLast = k == s.Insts.Count - 1;
+            if (isLast && !s.SetsPc[k]) sb.AppendLine($"        PC = 0x{ins.NextAddress:X}u;");
+        }
+        sb.AppendLine("    }");
+    }
+
+    // ---------------------------------------------------------------- helpers for the command line
+
+    public static string FindDefaultOutput()
+    {
+        foreach (string start in new[] { Directory.GetCurrentDirectory(), AppContext.BaseDirectory })
+        {
+            var d = new DirectoryInfo(start);
+            for (int up = 0; d != null && up < 8; up++, d = d.Parent)
+                if (File.Exists(Path.Combine(d.FullName, "GenesisRecomp.csproj")))
+                    return Path.Combine(d.FullName, "Generated", "Rom_{crc}.cs");
+        }
+        return Path.Combine(Directory.GetCurrentDirectory(), "Rom_{crc}.cs");
+    }
+}

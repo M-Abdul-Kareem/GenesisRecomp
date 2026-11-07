@@ -1,0 +1,37 @@
+## ---- Never commit games, or anything derived from them ----
+# Game files
+*.bin
+*.gen
+*.smd
+*.32x
+*.zip
+*.7z
+# Code generated from a game's machine code (made by --recompile / build_port.cmd) and listings of it
+GenesisRecomp/Generated/Rom_*.cs
+GenesisRecomp/listing_reference.txt
+# Screenshots/frames dumped by the test tools
+GenesisRecomp/frames/
+# Output of build_port.cmd / make_exe.cmd
+GenesisRecomp/Port/
+GenesisRecomp/publish/
+
+## ---- Visual Studio / .NET ----
+.vs/
+*.user
+*.suo
+*.rsuser
+*.userosscache
+*.sln.docstates
+[Bb]in/
+[Oo]bj/
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+[Ll]og/
+*.log
+*.pdb
+*.nupkg
+.idea/
+*.vsidx
+launchSettings.json.bak

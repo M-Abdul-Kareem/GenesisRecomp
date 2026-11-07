@@ -1,0 +1,100 @@
+GenesisRecomp update 2  -  SOUND + MOUSE BUTTONS  (also includes everything from update 1)
+==========================================================================================
+HOW TO INSTALL
+  Copy everything in this 'GenesisRecomp' folder into your project folder
+  (C:\Users\muthe\source\repos\GenesisRecomp\GenesisRecomp\) and choose "Replace the files".
+  Nothing is deleted. Then in Visual Studio:  Build > Rebuild Solution,  pick "GenesisRecompPlay", press F5.
+  (GenesisRecomp.csproj is NOT in this zip; keep yours.)
+
+WHAT'S NEW
+  1. SOUND.  The Z80, the YM2612 FM chip (with its drum/voice sample channel) and the PSG are emulated.
+     Sound plays through the default Windows playback device. The sound card sets the game speed.
+  2. MOUSE BUTTONS.  Press F1, click a box, then click a mouse button (left/right/middle/side) instead of pressing a key.
+     In the game, those buttons now press the pad buttons you assigned.
+  3. Recompiler groundwork (from update 1): structured instruction decoder + basic-block graph.
+
+HOW TO CHECK THE SOUND WITHOUT A GAME
+  Choose the profile "GenesisRecompAudioTest" and press F5. It writes Desktop\audio_test.wav.
+  Expected, in order: a steady tone, a three-note chord that fades, a buzzy tone then hiss, then a 1 kHz buzz.
+
+IF SOMETHING IS WRONG, TELL ME
+  - No sound at all:  check the Windows volume mixer and the default output device; then tell me.
+  - Crackling or the game running slow:  tell me how many fps the title bar shows.
+  - A game sounds wrong:  tell me the game and what you hear (e.g. "drums are missing", "music too fast").
+
+WHAT WAS TESTED (here, without a game ROM)
+  - Z80: passes all 67 tests of the standard zexdoc exerciser (46.7 billion emulated cycles, 0 errors).
+  - FM chip + PSG: measured pitches 439.6 Hz / 440.4 Hz (should be 440), chord notes, envelope fade, DAC 1000.3 Hz (should be 1000).
+  - Whole machine: a hand-built test ROM where the 68000 loads a Z80 program that plays FM + PSG, polls a YM2612 timer,
+    reads ROM through the Z80 bank window and counts interrupts (exactly one per frame).
+  - The Windows window code was only type-checked (I can't run Windows here), so the first real run is on your PC.
+
+KNOWN LIMITS
+  - YM2612: SSG-EG envelope mode and CSM mode are not emulated; LFO vibrato is approximate.
+  - No volume control yet (use the Windows mixer). Tab (fast-forward) mutes.
+  - I could not listen to a real game's music here, so game-specific problems are possible.
+
+
+=== Update: static recompiler, faster video, many games in one program ===
+
+What the recompiler is
+  The 68000 code in a ROM is translated ahead of time into C#. The generated methods have the opcode, addressing
+  modes, registers, sizes, immediates, branch targets and condition tests all resolved, so nothing is fetched or
+  decoded while the game runs. The video chip, sound chips and Z80 are still emulated (as in every static
+  recompilation of a console with its own chips). Anything not recompiled (code running from RAM, TRAP/RTE/BCD/STOP,
+  unresolved indirect jumps; about 1% of executed instructions in Streets of Rage) runs through the interpreter.
+
+Adding a game (once per game)
+  1. build_port.cmd "game.bin"            -> recompiles, builds and publishes to Port\, writes "Port\Play <game>.cmd"
+     (or by hand: GenesisRecomp --recompile "game.bin", then rebuild)
+  Each game becomes Generated\Rom_<CRC>.cs; all of them are compiled into the same program, and the right one is
+  picked from the ROM's CRC32. Delete a Generated\Rom_*.cs file and rebuild to remove a game.
+  build_port.cmd "game.bin" standalone   -> one self-contained .exe that needs no .NET install (untested option).
+
+Playing
+  Port\GenesisRecomp.exe <rom>  or drag any ROM file onto the .exe.  A ROM that was never recompiled still plays,
+  through the interpreter, with no building at all.  --interp forces the interpreter (to compare).
+  The code-discovery report that a bare path used to print is now:  GenesisRecomp --analyze "game.bin".
+  Speed is locked to the sound card, so the game runs at normal speed; sound goes to the Windows default device
+  and follows its volume.
+
+Checks (each reports 0 differences)
+  --verify-recomp "game.bin" 8   every instruction in the ROM, random CPU states, interpreter vs generated code.
+                                 Needs --recompile "game.bin" --max-seg 1 first, then a rebuild; regenerate normally afterwards.
+  --verify-vdp-fuzz 400          random video memory/registers, fast renderer vs the original per-pixel renderer.
+  --run ... --verify-vdp         the same comparison while a game runs.
+
+Faster video
+  Machine/VdpRenderFast.cs draws whole 8-pixel tile rows and converts colours through a 64-entry table (about 40%
+  faster rendering). The original renderer is kept as RenderLineReference (also used for column-scroll lines).
+
+Files: Recomp/ (Lifter, RomRecompiler, RecompCommand), Cpu/Cpu68k.Recomp.cs, Generated/, Tools/RecompVerify.cs,
+       Tools/VdpFuzz.cs, Machine/VdpRenderFast.cs, build_port.cmd. Cpu68k.Step() was split into TakeInterrupt() + ExecuteOne().
+
+
+
+=== Update: installable release (for GitHub) ===
+
+  make_exe.cmd                builds publish\GenesisRecomp.exe: one self-contained file, no .NET install needed.
+  Double-click the exe        -> asks to install for the current user (copies itself to %LocalAppData%\Programs\GenesisRecomp,
+                                 makes .bin/.md/.gen/.smd open with it, adds a Start Menu shortcut and an "Installed apps" entry),
+                                 then lets you pick a game. After that, double-clicking a game file plays it.
+  GenesisRecomp.exe --install [--dry-run] / --uninstall [--dry-run]    the same from the command line.
+  Release builds use the WinExe output type (no console window); developer builds keep the console.
+  repo-root\ (not part of the project folder): copy .github\ and README.md to the ROOT of your git repository and add
+  gitignore-additions.txt to its .gitignore. The workflow builds the exe on GitHub and attaches it to releases.
+  Games recompiled with build_port.cmd are never committed (ignored), so the downloadable exe plays every game through the interpreter.
+
+
+=== Update: games are recompiled in memory when opened (no build step) ===
+
+  Opening any ROM now finds its 68000 code (about a quarter of a second) and turns each piece of it into machine code in memory,
+  using .NET expression trees (Recomp\ExprLifter.cs, Recomp\LiveRecompiler.cs). No compiler, no Visual Studio, no files.
+  Pieces are built the first time the game reaches them, and a low-priority background thread builds the rest, so nothing hitches.
+  Code that cannot be translated runs in the interpreter, as before. A game with built-in generated code (Generated\Rom_*.cs) uses that instead.
+  So the downloadable exe recompiles every game on the player's own PC, and no game-derived code is ever distributed.
+
+  Checked: GenesisRecomp --verify-live "game.bin" 8   (profile GenesisRecompVerifyLive): every instruction of the game, random CPU states,
+  interpreter vs the in-memory code; 0 mismatches on both Streets of Rage revisions, and a deliberately broken condition is caught.
+  Whole-game run: cycle count and screenshots identical to the interpreter.
+  Flags: --interp (plain interpreter), --no-live (turn the in-memory recompiler off).

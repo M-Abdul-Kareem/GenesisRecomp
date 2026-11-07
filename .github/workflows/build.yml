@@ -1,0 +1,55 @@
+# Builds GenesisRecomp on GitHub's servers.
+#  - every push / pull request: build + run the self-checks
+#  - every push (and "Run workflow" button): produces GenesisRecomp.exe as a downloadable artifact
+#  - when you publish a release / push a tag like v1.0.0: attaches GenesisRecomp.exe to that release
+name: build
+
+on:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  # Path of the project file inside the repository. Change it if your repo is laid out differently.
+  PROJECT: GenesisRecomp/GenesisRecomp.csproj
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Build
+        run: dotnet build $env:PROJECT -c Release
+      - name: Self-check - fast video renderer matches the reference renderer
+        run: dotnet run --project $env:PROJECT -c Release --no-build -- --verify-vdp-fuzz 150
+
+  exe:
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Publish single-file self-contained exe
+        run: >
+          dotnet publish $env:PROJECT -c Release -r win-x64 --self-contained true
+          -p:OutputType=WinExe -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true
+          -p:EnableCompressionInSingleFile=true -p:DebugType=None -p:DebugSymbols=false -o publish
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GenesisRecomp
+          path: publish/GenesisRecomp.exe
+      - name: Attach to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: publish/GenesisRecomp.exe
