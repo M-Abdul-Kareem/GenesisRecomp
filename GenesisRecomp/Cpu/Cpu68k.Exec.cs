@@ -43,8 +43,8 @@ public sealed partial class Cpu68k
         int kind = (op >> 9) & 7;
         if (kind == 4)
         {
-            ushort w = Fetch16();
-            if ((w & 0xFF00) != 0) throw Illegal;
+            // 68000: only the low byte of the bit-number word is used; the high byte is ignored.
+            ushort w = (ushort)(Fetch16() & 0x00FF);
             BitOp((op >> 6) & 3, w, mode, reg, isStatic: true);
             return;
         }
@@ -53,8 +53,8 @@ public sealed partial class Cpu68k
         // ORI/ANDI/EORI to CCR and SR
         if (op == 0x003C || op == 0x023C || op == 0x0A3C)
         {
-            ushort w = Fetch16();
-            if ((w & 0xFF00) != 0) throw Illegal;
+            // 68000: only the low byte of the immediate word is used; the high byte is ignored.
+            ushort w = (ushort)(Fetch16() & 0x00FF);
             int ccr = sr & 0x1F;
             ccr = kind == 0 ? ccr | w : kind == 1 ? ccr & w : ccr ^ w;
             sr = (ushort)((sr & 0xFF00) | (ccr & 0x1F));
@@ -159,8 +159,10 @@ public sealed partial class Cpu68k
             Ea ea = ResolveChecked(mode, reg, Size.W, DataModes);
             int bound = (short)ReadEa(ea, Size.W);
             int dn = (short)D[(op >> 9) & 7];
-            if (dn < 0) { SetFlag(FN, true); RaiseException(6, PC); }
-            else if (dn > bound) { SetFlag(FN, false); RaiseException(6, PC); }
+            // SingleStep (MAME) corpus, all 1,523 compared cases: X unchanged, N = (Dn < 0) whether or
+            // not the instruction traps, Z = V = C = 0. (Dn == 0 never occurs in the corpus.)
+            SetFlag(FN, dn < 0); SetFlag(FZ, false); SetFlag(FV, false); SetFlag(FC, false);
+            if (dn < 0 || dn > bound) RaiseException(6, PC);
             return;
         }
         if ((op & 0xFFF0) == 0x4E40) { RaiseException(32 + (op & 0xF), PC); return; }
@@ -237,7 +239,7 @@ public sealed partial class Cpu68k
             case 0x44C0:
             {
                 Ea ea = ResolveChecked(mode, reg, Size.W, DataModes);
-                sr = (ushort)((sr & 0xFF00) | (ReadEa(ea, Size.W) & 0x1F));
+                sr = (ushort)(((uint)sr & 0xFF00u) | (ReadEa(ea, Size.W) & 0x1Fu));
                 return;
             }
             case 0x46C0:
@@ -348,12 +350,19 @@ public sealed partial class Cpu68k
 
     private uint Nbcd(uint dst)
     {
-        int lo = -(int)(dst & 0x0F) - (X ? 1 : 0);
-        int r = lo - (int)(dst & 0xF0);
-        if (lo < 0) r -= 6;
+        // Result = 0 - dst - X in decimal. Rules fitted against the SingleStep (MAME) corpus,
+        // 2,500/2,500 cases: the high-digit correction applies only on a true binary borrow;
+        // C and X = borrow after the low-digit correction; N = bit 7 of the result;
+        // V = bit 7 of (binary difference AND NOT result); Z is cleared only by a non-zero result.
+        int s = (int)(dst & 0xFF), xin = X ? 1 : 0;
+        int bin = -s - xin;
+        int r = bin;
+        if ((-(s & 0x0F) - xin) < 0) r -= 6;
         bool carry = r < 0;
-        if (carry) r -= 0x60;
+        if (bin < 0) r -= 0x60;
         uint result = (uint)r & 0xFF;
+        SetFlag(FN, (result & 0x80) != 0);
+        SetFlag(FV, ((bin & ~(int)result) & 0x80) != 0);
         if (result != 0) sr &= unchecked((ushort)~FZ);
         SetFlag(FC, carry); SetFlag(FX, carry);
         return result;
@@ -407,7 +416,8 @@ public sealed partial class Cpu68k
         uint baseAddr = PC;                           // PC after the opcode word
         int disp = (sbyte)(op & 0xFF);
         if ((op & 0xFF) == 0) disp = (short)Fetch16();
-        else if ((op & 0xFF) == 0xFF) throw Illegal;  // 32-bit displacement: 68020+
+        // 68000: a displacement byte of 0xFF is an ordinary short branch of -1 (the 32-bit
+        // displacement form exists only on the 68020 and later), so it is not illegal here.
         uint target = baseAddr + (uint)disp;
         if (cc == 1) { Push32(PC); PC = target; return; }
         if (cc == 0 || Cond(cc)) PC = target;
@@ -515,27 +525,36 @@ public sealed partial class Cpu68k
             A[rx] -= (uint)(rx == 7 ? 2 : 1); d = bus.Read8(A[rx]);
             dstEa = Mem(A[rx]);
         }
+        // Rules fitted against the SingleStep (MAME) corpus, 2,500/2,500 cases each for ABCD and SBCD.
+        // ABCD: +6 if the low digits overflow; the high-digit correction (+0x60) and carry apply only
+        //       when the corrected sum exceeds 0x9F (not 0x99). SBCD: -6 if the low digits borrow;
+        //       carry = borrow after that correction; the high-digit correction (-0x60) applies only
+        //       on a true binary borrow. N = bit 7 of the result. V = bit 7 of (~bin AND result)
+        //       for ABCD and of (bin AND ~result) for SBCD, where bin is the plain binary result.
         int xin = X ? 1 : 0;
-        int res;
+        int bin, res;
         bool carry;
         if (isAdd)
         {
-            res = (int)(s & 0x0F) + (int)(d & 0x0F) + xin;
-            if (res > 9) res += 6;
-            res += (int)(s & 0xF0) + (int)(d & 0xF0);
-            carry = res > 0x99;
-            if (carry) res -= 0xA0;
+            bin = (int)(s & 0xFF) + (int)(d & 0xFF) + xin;
+            res = bin;
+            if (((int)(s & 0x0F) + (int)(d & 0x0F) + xin) > 9) res += 6;
+            carry = res > 0x9F;
+            if (carry) res += 0x60;
         }
         else
         {
-            res = (int)(d & 0x0F) - (int)(s & 0x0F) - xin;
-            if (res < 0) res -= 6;
-            res += (int)(d & 0xF0) - (int)(s & 0xF0);
+            bin = (int)(d & 0xFF) - (int)(s & 0xFF) - xin;
+            res = bin;
+            if (((int)(d & 0x0F) - (int)(s & 0x0F) - xin) < 0) res -= 6;
             carry = res < 0;
-            if (carry) res -= 0x60;
+            if (bin < 0) res -= 0x60;
         }
         uint result = (uint)res & 0xFF;
+        int r8 = (int)result;
         SetFlag(FC, carry); SetFlag(FX, carry);
+        SetFlag(FN, (result & 0x80) != 0);
+        SetFlag(FV, ((isAdd ? (~bin & r8) : (bin & ~r8)) & 0x80) != 0);
         if (result != 0) sr &= unchecked((ushort)~FZ);
         WriteEa(dstEa, Size.B, result);
     }
