@@ -220,7 +220,7 @@ public sealed partial class Vdp
         {
             R[21] = (byte)s;
             R[22] = (byte)(s >> 8);
-            R[23] = (byte)((R[23] & 0x80) | ((s >> 16) & 0x7F));
+            R[23] = (byte)(((uint)R[23] & 0x80u) | ((s >> 16) & 0x7Fu));
         }
     }
 

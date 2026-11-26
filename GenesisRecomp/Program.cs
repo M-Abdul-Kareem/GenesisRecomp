@@ -66,6 +66,11 @@ if (args.Length >= 2 && args[0] == "--verify-z80")
     return GenesisRecomp.Tools.Z80Verify.Run(args[1]);
 if (args.Length >= 1 && args[0] == "--verify-decoder")
     return GenesisRecomp.Tools.DecoderVerify.Run(args.Length >= 2 ? args[1] : null);
+if (args.Length >= 2 && args[0] == "--verify-singlestep")
+{
+    int limit = args.Length >= 3 ? int.Parse(args[2]) : int.MaxValue;
+    return GenesisRecomp.Tools.SingleStepVerify.Run(args[1], limit);
+}
 if (args.Length >= 2 && args[0] == "--verify")
     return GenesisRecomp.Tools.CpuVerify.Run(args[1]);
 

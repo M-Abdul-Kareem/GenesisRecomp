@@ -329,7 +329,8 @@ public sealed partial class Cpu68k
     private uint IndexedAddress(uint baseValue)
     {
         ushort e = Fetch16();
-        if ((e & 0x0100) != 0) throw Illegal;                  // 68020 full format
+        // 68000: bits 8-10 of the brief extension word are ignored. The 68020 full-format
+        // extension word does not exist on this CPU, so it must not raise an illegal-instruction exception.
         int idxReg = (e >> 12) & 7;
         uint idx = (e & 0x8000) != 0 ? A[idxReg] : D[idxReg];
         if ((e & 0x0800) == 0) idx = (uint)(int)(short)idx;

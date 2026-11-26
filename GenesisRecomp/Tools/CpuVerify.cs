@@ -105,6 +105,7 @@ public static class CpuVerify
     public static int Run(string path)
     {
         int total = 0, compared = 0, passed = 0, skippedSys = 0, lenient = 0, exFetch = 0;
+        int malformed = 0;
         var buckets = new Dictionary<string, (int Count, string Example)>();
         void Add(string key, string example)
         {
@@ -116,8 +117,18 @@ public static class CpuVerify
 
         foreach (string line in File.ReadLines(path))
         {
+            if (string.IsNullOrWhiteSpace(line)) continue;
+
             string[] f = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-            if (f.Length < 22) continue;
+
+            // The verifier reads fields through f[42] (the expected RAM CRC).
+            // Reject truncated or unrecognized records before indexing their fields.
+            if (f.Length < 43 || (f[0] != "ok" && f[0] != "exc"))
+            {
+                malformed++;
+                continue;
+            }
+
             total++;
             bool expectException = f[0] == "exc";
             ushort[] code = { (ushort)H(f[1]), (ushort)H(f[2]), (ushort)H(f[3]), (ushort)H(f[4]) };
@@ -187,6 +198,8 @@ public static class CpuVerify
 
         Console.WriteLine($"cases: {total:N0}  compared: {compared:N0}  passed: {passed:N0}  failed: {compared - passed - lenient:N0}  " +
                           $"(Unicorn accepts a malformed encoding that we reject: {lenient:N0}; SR-system-byte ops skipped: {skippedSys:N0})");
+        if (malformed > 0)
+            Console.WriteLine($"Malformed or truncated input lines skipped: {malformed:N0}");
         Console.WriteLine("Cases excluded because Unicorn differs from a real 68000 or the result is undefined:");
         foreach (var kv in quirkSkips.OrderByDescending(kv => kv.Value)) Console.WriteLine($"  {kv.Value,6}  {kv.Key}");
         Console.WriteLine($"Unicorn-exception cases: {excChecked:N0}  we also raised an exception: {excOk:N0}  Unicorn faulted on the next fetch instead: {exFetch:N0}");
